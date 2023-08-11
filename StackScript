@@ -1,0 +1,150 @@
+#!/usr/bin/bash
+#
+# Author: Justin Roysdon
+# Description: Startup script for Linode to deploy Podman to a base Fedora 38 image and deploy a Squid container
+# Date: 2023-08-10
+echo "Start of StackScript..." | tee -a /root/StackScript.output
+echo "Create initial user adding to the wheel group for sudo access" | tee -a /root/StackScript.output
+# this user will not have a password, see sudoers modification below, does bob even need sudo?
+useradd -G wheel bob
+
+echo "Adding bob's key, this needs to be updated immediately" | tee -a /root/StackScript.output
+mkdir /home/bob/.ssh
+chown bob:bob /home/bob/.ssh
+
+chmod 700 /home/bob/.ssh
+chcon unconfined_u:object_r:ssh_home_t:s0 /home/bob/.ssh
+
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM2DC3y4qfri+8HeW3B5kjRgIDH6vNC40+u7OSYgkDgV" > /home/bob/.ssh/authorized_keys
+chmod 600 /home/bob/.ssh/authorized_keys
+chown bob:bob /home/bob/.ssh/authorized_keys
+chcon unconfined_u:object_r:ssh_home_t:s0 /home/bob/.ssh/authorized_keys
+
+echo "Allow bob to sudo using ssh-agent and private key... not implemented, line numbers change" | tee -a /root/StackScript.output
+#sed -i '2s#^#auth sufficient pam_ssh_agent_auth.so file=~/.ssh/authorized_keys\n#' /etc/pam.d/sudo
+#sed -i '87s#^#Defaults    env_keep += "SSH_AUTH_SOCK"\n#' /etc/sudoers
+
+echo "Disabling root ssh login" | tee -a /root/StackScript.output
+sed -i 's/PermitRootLogin yes/PermitRootLogin no/g' /etc/ssh/sshd_config
+
+echo "Disabling PasswordAuthentication" | tee -a /root/StackScript.output
+sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
+
+echo "Enabling PubkeyAuthentication" | tee -a /root/StackScript.output
+sed -i 's/\#PubkeyAuthentication yes/PubkeyAuthentication yes/g' /etc/ssh/sshd_config
+echo "Installing Podman..." | tee -a /root/StackScript.output
+dnf -y install podman
+
+echo "Add Squid Configuration..." | tee -a /root/StackScript.output
+mkdir /home/bob/.squid.conf
+chown bob:bob /home/bob/.squid.conf
+chmod 700 /home/bob/.squid.conf
+chcon unconfined_u:object_r:user_home_t:s0 /home/bob/.squid.conf
+
+### Start of squid.conf file contents
+cat << EOF > /home/bob/.squid.conf/squid.conf
+acl localnet src 0.0.0.1-0.255.255.255	# RFC 1122 "this" network (LAN)
+acl localnet src 10.0.0.0/8		# RFC 1918 local private network (LAN)
+acl localnet src 100.64.0.0/10		# RFC 6598 shared address space (CGN)
+acl localnet src 169.254.0.0/16 	# RFC 3927 link-local (directly plugged) machines
+acl localnet src 172.16.0.0/12		# RFC 1918 local private network (LAN)
+acl localnet src 192.168.0.0/16		# RFC 1918 local private network (LAN)
+acl localnet src fc00::/7       	# RFC 4193 local private network range
+acl localnet src fe80::/10      	# RFC 4291 link-local (directly plugged) machines
+acl SSL_ports port 443
+acl Safe_ports port 80		# http
+acl Safe_ports port 21		# ftp
+acl Safe_ports port 443		# https
+acl Safe_ports port 70		# gopher
+acl Safe_ports port 210		# wais
+acl Safe_ports port 1025-65535	# unregistered ports
+acl Safe_ports port 280		# http-mgmt
+acl Safe_ports port 488		# gss-http
+acl Safe_ports port 591		# filemaker
+acl Safe_ports port 777		# multiling http
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+http_access allow localhost manager
+http_access deny manager
+include /etc/squid/conf.d/*.conf
+http_access allow localhost
+http_access deny all
+http_port 3128
+coredump_dir /var/spool/squid
+refresh_pattern ^ftp:		1440	20%	10080
+refresh_pattern ^gopher:	1440	0%	1440
+refresh_pattern -i (/cgi-bin/|\?) 0	0%	0
+refresh_pattern \/(Packages|Sources)(|\.bz2|\.gz|\.xz)$ 0 0% 0 refresh-ims
+refresh_pattern \/Release(|\.gpg)$ 0 0% 0 refresh-ims
+refresh_pattern \/InRelease$ 0 0% 0 refresh-ims
+refresh_pattern \/(Translation-.*)(|\.bz2|\.gz|\.xz)$ 0 0% 0 refresh-ims
+refresh_pattern .		0	20%	4320
+EOF
+
+### End of squid.conf contents
+
+echo "Change owner and context of squid.conf so user can access" | tee -a /root/StackScript.output
+chown bob:bob /home/bob/.squid.conf/squid.conf
+chcon unconfined_u:object_r:user_home_t:s0 /home/bob/.squid.conf/squid.conf
+
+echo "Create squid zone for firewalld..." | tee -a /root/StackScript.output
+### Start of /etc/firewalld/zones/squid.xml file contents
+cat << EOF > /etc/firewalld/zones/squid.xml
+<?xml version="1.0" encoding="utf-8"?>
+<zone target="ACCEPT">
+  <service name="squid"/>
+  <source address="68.7.50.12/32"/><!-- home -->
+  <source address="98.97.57.175/32"/><!-- house -->
+  <source address="166.199.69.1/32"/><!-- mobile -->
+</zone>
+EOF
+
+### End of /etc/firewalld/zones/squid.xml file contents
+echo "Reloading firewalld to apply new zone..." | tee -a /root/StackScript.output
+firewall-cmd --reload
+
+echo "Creating aliases for squid start, stop, and logging..." | tee -a /root/StackScript.output
+alias show_squid='podman logs -f squid-container | tee ~/squid_logs/squid_log_$(date +%y%m%d-%H%M).log'
+alias start_squid='podman run --rm -d --name squid-container -p 3128:3128 -v /home/bob/.squid.conf/squid.conf:/etc/squid/squid.conf:z docker.io/ubuntu/squid:5.2-22.04_beta'
+alias stop_squid='podman stop squid-container'
+
+echo "Copy aliases to /home/bob/.bash_profile..." | tee -a /root/StackScript.output
+alias show_squid >> /home/bob/.bash_profile
+alias start_squid >> /home/bob/.bash_profile
+alias stop_squid >> /home/bob/.bash_profile
+
+echo "Making folder for squid logs" | tee -a /root/StackScript.output
+mkdir /home/bob/squid_logs
+chown bob:bob /home/bob/squid_logs
+chmod 700 /home/bob/squid_logs
+chcon unconfined_u:object_r:user_home_t:s0 /home/bob/squid_logs
+
+echo "Installing tmux for running podman containers inside tmux sessions..." | tee -a /root/StackScript.output
+dnf -y install tmux
+
+echo "Start squid container inside detached tmux session which will also pull down the image from docker.io..." | tee -a /root/StackScript.output
+echo "Starting squid containers inside tmux session as user bob..." | tee -a /root/StackScript.output
+sudo -u bob tmux new-session -d -t squid
+sudo -u bob tmux send-keys -t squid 'start_squid;show_squid' C-m
+
+echo "Install openvpn3 and make aliases..." | tee -a /root/StackScript.output
+dnf -y install yum-plugin-copr
+dnf -y copr enable dsommers/openvpn3
+dnf -y install openvpn3-client
+alias op3='openvpn3'
+alias op3 >> /home/bob/.bash_profile
+mkdir /home/bob/.openvpn
+chown bob:bob /home/bob/.openvpn
+chmod 700 /home/bob/.openvpn
+chcon unconfined_u:object_r:user_home_t:s0 /home/bob/.openvpn
+
+# ovpn files need to be copied over manually, too sensitive to put in this script
+echo "Install and Start fail2ban using default config..." | tee -a /root/StackScript.output
+dnf -y install fail2ban
+systemctl start fail2ban
+systemctl enable fail2ban
+cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+systemctl restart fail2ban
+# need to add custom config here, https://www.linode.com/docs/guides/using-fail2ban-to-secure-your-server-a-tutorial/
+
+echo "---Finished StackScript." | tee -a /root/StackScript.output
