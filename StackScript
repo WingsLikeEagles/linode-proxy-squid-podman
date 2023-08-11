@@ -15,7 +15,7 @@ chown bob:bob /home/bob/.ssh
 chmod 700 /home/bob/.ssh
 chcon unconfined_u:object_r:ssh_home_t:s0 /home/bob/.ssh
 
-echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM2DC3y4qfri+8HeW3B5kjRgIDH6vNC40+u7OSYgkDgV" > /home/bob/.ssh/authorized_keys
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM2DC3y4qfri+8HeW3B5kjRgIDH6vNC16+u7OSYgkDgV" > /home/bob/.ssh/authorized_keys
 chmod 600 /home/bob/.ssh/authorized_keys
 chown bob:bob /home/bob/.ssh/authorized_keys
 chcon unconfined_u:object_r:ssh_home_t:s0 /home/bob/.ssh/authorized_keys
@@ -93,9 +93,9 @@ cat << EOF > /etc/firewalld/zones/squid.xml
 <?xml version="1.0" encoding="utf-8"?>
 <zone target="ACCEPT">
   <service name="squid"/>
-  <source address="68.7.50.12/32"/><!-- home -->
-  <source address="98.97.57.175/32"/><!-- house -->
-  <source address="166.199.69.1/32"/><!-- mobile -->
+  <source address="111.22.33.143/32"/><!-- home -->
+  <source address="111.22.33.144/32"/><!-- house -->
+  <source address="111.22.33.145/32"/><!-- mobile -->
 </zone>
 EOF
 
